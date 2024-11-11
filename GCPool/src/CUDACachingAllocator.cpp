@@ -24,7 +24,7 @@
 #include <c10/util/Backtrace.h>
 #include <unordered_map>
 #include <unordered_set>
-#include <c10/cuda/cuda_vmm_allocator.h>
+#include <c10/cuda/cuda_gcp_allocator.h>
 
 #include <cuda_runtime_api.h>
 #include <algorithm>
