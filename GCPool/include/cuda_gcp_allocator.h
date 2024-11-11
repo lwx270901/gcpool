@@ -11,7 +11,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 // Modified GLake Memory Allocator with Compaction
-// Uses CUDA Virtual Memory Management (VMM)
 // Implements compaction using mark-and-sweep algorithm
 
 #pragma once
