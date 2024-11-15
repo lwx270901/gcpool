@@ -1,16 +1,3 @@
-// Copyright 2022 The GCPool Authors. All rights reserved.
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 #include <c10/cuda/CUDACachingAllocator.h>
 
 #include <c10/core/impl/GPUTrace.h>
@@ -24,7 +11,7 @@
 #include <c10/util/Backtrace.h>
 #include <unordered_map>
 #include <unordered_set>
-#include <c10/cuda/cuda_gcp_allocator.h>
+#include <c10/cuda/cuda_gcpool_allocator.h>
 
 #include <cuda_runtime_api.h>
 #include <algorithm>
@@ -453,7 +440,7 @@ struct BlockEventOrderPool
             
       return true;
     } else {
-      GMLAKE_INFO(" warning block %p, block ptr %p of size %lu not found in pool", block, block->ptr, block->size);
+      GCPOOL_INFO(" warning block %p, block ptr %p of size %lu not found in pool", block, block->ptr, block->size);
       return false;
     }
   }
@@ -464,7 +451,7 @@ struct BlockEventOrderPool
             
       return blocks.erase(it);
     } else {
-      GMLAKE_INFO(" warning block %p, block ptr %p of size %lu not found in pool", (*it), (*it)->ptr, (*it)->size);
+      GCPOOL_INFO(" warning block %p, block ptr %p of size %lu not found in pool", (*it), (*it)->ptr, (*it)->size);
       return blocks.end();
     }
   }
@@ -1146,7 +1133,7 @@ class DeviceCachingAllocator {
             std::move(context));
       }
       stats.num_ooms += 1;
-      GMLAKE_INFO(" current memory info: device_total: %luMB, device_free: %luMB, request size: %luMB",
+      GCPOOL_INFO(" current memory info: device_total: %luMB, device_free: %luMB, request size: %luMB",
                                                                       device_total/(1024*1024), device_free/(1024*1024), size/(1024*1024));
       print_snapshot();
 
@@ -1319,7 +1306,7 @@ class DeviceCachingAllocator {
               
           for(size_t i=0; i<keep_blocks; i++) {
             if(block->vmm_segment->phy_blocks[i]->free) {
-              GMLAKE_INFO(" warning for malloc fused blocks has free phy_block, something wrong happended");
+              GCPOOL_INFO(" warning for malloc fused blocks has free phy_block, something wrong happended");
               exit(-1);
             }
           }
@@ -1607,7 +1594,7 @@ class DeviceCachingAllocator {
             block->vmm_segment->free_blocks++;
             phy_block->free = true;
           } else {
-            GMLAKE_INFO(" warning used blocks is free");
+            GCPOOL_INFO(" warning used blocks is free");
             exit(-1);
           }
                   
@@ -1755,7 +1742,7 @@ class DeviceCachingAllocator {
     size_t garbage_size = garbage_collect_fused_blocks(2, 0);
     total_fuse_size -= garbage_size;
 	
-	  GMLAKE_INFO(" garbage_collect_fused_blocks() return %luMB garbage memory", garbage_size/(1024*1024));
+	  GCPOOL_INFO(" garbage_collect_fused_blocks() return %luMB garbage memory", garbage_size/(1024*1024));
   }
 
   /** Retrieves size of largest unused block held by the memory cache **/
@@ -1907,10 +1894,10 @@ class DeviceCachingAllocator {
       
     for(auto& segment_info : memory_snapshot) {
       if(segment_info.is_large) {
-        GMLAKE_INFO(" segment: %p, size: %luMB", (void*)segment_info.address, segment_info.total_size/(1024*1024));
+        GCPOOL_INFO(" segment: %p, size: %luMB", (void*)segment_info.address, segment_info.total_size/(1024*1024));
                     
         for(auto& block_info : segment_info.blocks) {
-          GMLAKE_INFO(" %s %s block, size: %luMB", 
+          GCPOOL_INFO(" %s %s block, size: %luMB", 
                      (block_info.allocated? "allocated" : "unallocated"), 
                      (block_info.active? "active" : "inactive"),
                      block_info.size/(1024*1024) );
@@ -2181,7 +2168,7 @@ class DeviceCachingAllocator {
     if(vmmDefragment > 0 && dst->vmm_segment) {
       bool ret = dst->vmm_segment->remerge(*(src->vmm_segment));
       if(!ret) {
-        GMLAKE_INFO(" merge block %p, ptr %p of size %fMB into block %p, ptr %p of size %fMB failed", 
+        GCPOOL_INFO(" merge block %p, ptr %p of size %fMB into block %p, ptr %p of size %fMB failed", 
                     src, src->ptr, src->size/(1024.f*1024.f), dst, dst->ptr, dst->size/(1024.f*1024.f));
       }
       
@@ -2307,7 +2294,7 @@ class DeviceCachingAllocator {
           auto& phy_block = p.block->vmm_segment->phy_blocks[i];
                 
           if(!phy_block->free) {
-            GMLAKE_INFO(" warning for fused blocks not free, something wrong happended");
+            GCPOOL_INFO(" warning for fused blocks not free, something wrong happended");
             exit(-1);
           }
                 
@@ -2490,7 +2477,7 @@ class DeviceCachingAllocator {
       for(size_t i=0; i < p.block->vmm_segment->phy_blocks.size(); i++) {
         auto& phy_block = p.block->vmm_segment->phy_blocks[i];
         if(!phy_block->free) {
-          GMLAKE_INFO(" warning for non fused blocks has non free phy_block: %lu, something wrong happended, block %p, block->ptr %p, block->size %fMB, free_blocks %lu, used_blocks %lu, event_id: %lu",
+          GCPOOL_INFO(" warning for non fused blocks has non free phy_block: %lu, something wrong happended, block %p, block->ptr %p, block->size %fMB, free_blocks %lu, used_blocks %lu, event_id: %lu",
                       i, p.block, p.block->ptr, p.block->size/(1024.f*1024.f), p.block->vmm_segment->free_blocks, p.block->vmm_segment->used_blocks, p.block->self_last_event->event_id);
             
               
@@ -2499,7 +2486,7 @@ class DeviceCachingAllocator {
                   
             if(other_block == p.block) continue;
               
-            GMLAKE_INFO(" warning for non fused blocks has non free phy_block: %lu, something wrong happended, co-ref block %p, block->ptr %p, block->size %fMB, free_blocks %lu, used_blocks %lu, event_id: %lu",
+            GCPOOL_INFO(" warning for non fused blocks has non free phy_block: %lu, something wrong happended, co-ref block %p, block->ptr %p, block->size %fMB, free_blocks %lu, used_blocks %lu, event_id: %lu",
                         i, other_block, other_block->ptr, other_block->size/(1024.f*1024.f), other_block->vmm_segment->free_blocks, other_block->vmm_segment->used_blocks, other_block->self_last_event->event_id);
           }
       
@@ -2529,7 +2516,7 @@ class DeviceCachingAllocator {
                   
             other_block->vmm_segment->free_blocks--;
           } else {
-            GMLAKE_INFO(" warning for non fused blocks has phy_block mapped to other non fused blocks");
+            GCPOOL_INFO(" warning for non fused blocks has phy_block mapped to other non fused blocks");
             exit(-1);
           }
         }
@@ -2588,14 +2575,14 @@ class DeviceCachingAllocator {
                   
                   
           if(!block->vmm_segment.unique()) {
-            GMLAKE_INFO(" warning block is not unique, ref_count: %lu, block %p, block->ptr %p, block->size %fMB, phy_blocks %lu, free_blocks %lu, used_blocks %lu, event_id: %lu", 
+            GCPOOL_INFO(" warning block is not unique, ref_count: %lu, block %p, block->ptr %p, block->size %fMB, phy_blocks %lu, free_blocks %lu, used_blocks %lu, event_id: %lu", 
                         block->vmm_segment.use_count(), block, block->ptr, block->size/(1024.f*1024.f), block->vmm_segment->phy_blocks.size(), block->vmm_segment->free_blocks, block->vmm_segment->used_blocks, block->self_last_event->event_id);
             exit(-1);
           }
                   
                   
           if(block->vmm_segment->vir_blocks[0]->vir_dev_ptr.use_count() != block->vmm_segment->vir_blocks.size()) {
-            GMLAKE_INFO(" warning vir_blocks vir_dev_ptr use_count %lu != vir_blocks.size() %lu, block %p, block->ptr %p, block->size %fMB, phy_blocks %lu, free_blocks %lu, used_blocks %lu, event_id: %lu", 
+            GCPOOL_INFO(" warning vir_blocks vir_dev_ptr use_count %lu != vir_blocks.size() %lu, block %p, block->ptr %p, block->size %fMB, phy_blocks %lu, free_blocks %lu, used_blocks %lu, event_id: %lu", 
                         block->vmm_segment->vir_blocks[0]->vir_dev_ptr.use_count(), block->vmm_segment->vir_blocks.size(),
                         block, block->ptr, block->size/(1024.f*1024.f), block->vmm_segment->phy_blocks.size(), block->vmm_segment->free_blocks, block->vmm_segment->used_blocks, block->self_last_event->event_id);
             exit(-1);
@@ -2612,7 +2599,7 @@ class DeviceCachingAllocator {
           
         } else if(err == cudaErrorNotReady) {
                   
-          GMLAKE_INFO(" fragmented_free_fused_blocks: block self_last_event NotReady %p, block->ptr %p, block->size %fMB, phy_blocks %lu, free_blocks %lu, used_blocks %lu, event_id: %lu", 
+          GCPOOL_INFO(" fragmented_free_fused_blocks: block self_last_event NotReady %p, block->ptr %p, block->size %fMB, phy_blocks %lu, free_blocks %lu, used_blocks %lu, event_id: %lu", 
                       block, block->ptr, block->size/(1024.f*1024.f), block->vmm_segment->phy_blocks.size(), block->vmm_segment->free_blocks, block->vmm_segment->used_blocks, block->self_last_event->event_id);
                   
                   
@@ -2627,7 +2614,7 @@ class DeviceCachingAllocator {
     }
       
       
-    GMLAKE_INFO(" gc from fragmented_free_fused_blocks: blocks %lu, size %fMB", garbage_blocks, garbage_size/(1024.f*1024.f));
+    GCPOOL_INFO(" gc from fragmented_free_fused_blocks: blocks %lu, size %fMB", garbage_blocks, garbage_size/(1024.f*1024.f));
       
       
     if(time > 0) {
@@ -2664,7 +2651,7 @@ class DeviceCachingAllocator {
                   
                             
             if(!block->vmm_segment.unique()) {
-              GMLAKE_INFO(" warning block is not unique, ref_count %lu, block %p, block->ptr %p, block->size %fMB, phy_blocks %lu, free_blocks %lu, used_blocks %lu, event_id: %lu", 
+              GCPOOL_INFO(" warning block is not unique, ref_count %lu, block %p, block->ptr %p, block->size %fMB, phy_blocks %lu, free_blocks %lu, used_blocks %lu, event_id: %lu", 
                           block->vmm_segment.use_count(), block, block->ptr, block->size/(1024.f*1024.f), block->vmm_segment->phy_blocks.size(), block->vmm_segment->free_blocks, block->vmm_segment->used_blocks, block->self_last_event->event_id);
               exit(-1);
             }
@@ -2672,7 +2659,7 @@ class DeviceCachingAllocator {
                     
                   
             if(block->vmm_segment->vir_blocks[0]->vir_dev_ptr.use_count() != block->vmm_segment->vir_blocks.size()) {
-              GMLAKE_INFO(" warning vir_blocks vir_dev_ptr use_count %lu != vir_blocks.size() %lu, block %p, block->ptr %p, block->size %fMB, phy_blocks %lu, free_blocks %lu, used_blocks %lu, event_id: %lu", 
+              GCPOOL_INFO(" warning vir_blocks vir_dev_ptr use_count %lu != vir_blocks.size() %lu, block %p, block->ptr %p, block->size %fMB, phy_blocks %lu, free_blocks %lu, used_blocks %lu, event_id: %lu", 
                           block->vmm_segment->vir_blocks[0]->vir_dev_ptr.use_count(), block->vmm_segment->vir_blocks.size(),
                           block, block->ptr, block->size/(1024.f*1024.f), block->vmm_segment->phy_blocks.size(), block->vmm_segment->free_blocks, block->vmm_segment->used_blocks, block->self_last_event->event_id);
               exit(-1);
@@ -2680,7 +2667,7 @@ class DeviceCachingAllocator {
                     
             delete block;
           } else if(err == cudaErrorNotReady) {
-            GMLAKE_INFO(" free_fused_blocks_in_release_order: block self_last_event NotReady %p, block->ptr %p, block->size %fMB, phy_blocks %lu, free_blocks %lu, used_blocks %lu, event_id: %lu", 
+            GCPOOL_INFO(" free_fused_blocks_in_release_order: block self_last_event NotReady %p, block->ptr %p, block->size %fMB, phy_blocks %lu, free_blocks %lu, used_blocks %lu, event_id: %lu", 
                         block, block->ptr, block->size/(1024.f*1024.f), block->vmm_segment->phy_blocks.size(), block->vmm_segment->free_blocks, block->vmm_segment->used_blocks, block->self_last_event->event_id);
                     
             cudaGetLastError();
@@ -2696,7 +2683,7 @@ class DeviceCachingAllocator {
       
       //cudaDeviceSynchronize();
       
-    GMLAKE_INFO(" gc from free_fused_blocks_in_release_order: blocks %lu, size %fMB", garbage_blocks, garbage_size/(1024.f*1024.f));
+    GCPOOL_INFO(" gc from free_fused_blocks_in_release_order: blocks %lu, size %fMB", garbage_blocks, garbage_size/(1024.f*1024.f));
 
     return garbage_size;
   }
@@ -2906,7 +2893,7 @@ class DeviceCachingAllocator {
               
           phy_blocks2glue = std::move(vmm_segment->phy_blocks);
               
-          GMLAKE_INFO(" allocate virtual address for %lu phy_blocks the %dth time failed, try to garbage_collect_fused_blocks", phy_blocks2glue.size(), gc_time);
+          GCPOOL_INFO(" allocate virtual address for %lu phy_blocks the %dth time failed, try to garbage_collect_fused_blocks", phy_blocks2glue.size(), gc_time);
               
           size_t garbage_size = garbage_collect_fused_blocks(gc_time, p.search_key.size);
           gc_time++;
@@ -2962,7 +2949,7 @@ class DeviceCachingAllocator {
       p.block = fused_block;
       p.err = cudaSuccess;
 
-      GMLAKE_INFO(" fused block %p, ptr %p of size %fMB", 
+      GCPOOL_INFO(" fused block %p, ptr %p of size %fMB", 
 			            fused_block, fused_block->ptr, fused_block->size/(1024.f*1024.f));
       
       net_change_segments += 1;
@@ -2974,11 +2961,11 @@ class DeviceCachingAllocator {
 
       if(fuse_size >= p.search_key.size) {
         total_fuse_size += fuse_size;
-        GMLAKE_INFO(" try %d: fuse %lu physical blocks to ptr %p of size %fMB for allocate size %fMB succeeded, takes %fms, total_fuse_size %fMB", 
+        GCPOOL_INFO(" try %d: fuse %lu physical blocks to ptr %p of size %fMB for allocate size %fMB succeeded, takes %fms, total_fuse_size %fMB", 
                    time, fused_block->vmm_segment->phy_blocks.size(), fused_block->vmm_segment->segment_ptr, fuse_size/(1024.f*1024.f), p.search_key.size/(1024.f*1024.f), fuse_time.count(), total_fuse_size/(1024.f*1024.f));
         
         if(total_fuse_size > auto_gc_limits*G) {
-            GMLAKE_INFO(" virtual address larger than %luG, do garbage_collect_fused_blocks() ", auto_gc_limits);
+            GCPOOL_INFO(" virtual address larger than %luG, do garbage_collect_fused_blocks() ", auto_gc_limits);
             
             size_t garbage_size = garbage_collect_fused_blocks(2, 0);
             
@@ -3135,7 +3122,7 @@ class DeviceCachingAllocator {
           size_t request_size = p.search_key.size;
                 
           if(free_block_size >= request_size) {
-            GMLAKE_INFO(" free_block_size %fMB is larger than allocation size %fMB, something weired happended", 
+            GCPOOL_INFO(" free_block_size %fMB is larger than allocation size %fMB, something weired happended", 
                        free_block_size/(1024.f*1024.f), size/(1024.f*1024.f));
             return false;
           }
@@ -3172,7 +3159,7 @@ class DeviceCachingAllocator {
                   
                     
             if(device_free > size && total_garbage_size >= size) {
-              GMLAKE_INFO(" allocate size %luMB memory by vmm the %dth time failed, try to garbage_collect_fused_blocks", size/(1024*1024), gc_time);
+              GCPOOL_INFO(" allocate size %luMB memory by vmm the %dth time failed, try to garbage_collect_fused_blocks", size/(1024*1024), gc_time);
                         
               vmm_segment.reset();
               size_t garbage_size = garbage_collect_fused_blocks(gc_time, p.alloc_size);
@@ -3192,7 +3179,7 @@ class DeviceCachingAllocator {
           cudaGetLastError();
           vmm_segment.reset();
                 
-          GMLAKE_INFO(" allocate size %fMB memory by vmm failed", size/(1024.f*1024.f));
+          GCPOOL_INFO(" allocate size %fMB memory by vmm failed", size/(1024.f*1024.f));
             
           return false;
         }
@@ -3236,7 +3223,7 @@ class DeviceCachingAllocator {
         large_blocks.blocks.insert(new_block);
             
         if(!get_fused_fragmented_blocks(p, 4)) {
-          GMLAKE_INFO(" call get_fused_fragmented_blocks failed");
+          GCPOOL_INFO(" call get_fused_fragmented_blocks failed");
           return false;
         }
       } else {
@@ -3406,7 +3393,7 @@ class DeviceCachingAllocator {
       for(size_t i=0; i < block->vmm_segment->phy_blocks.size(); i++) {
         auto& phy_block = block->vmm_segment->phy_blocks[i];
         if(!phy_block->free) {
-          GMLAKE_INFO(" warning for non fused blocks has non free phy_block: %lu, something wrong happended, block %p, block->ptr %p, block->size %fMB, free_blocks %lu, used_blocks %lu, event_id: %lu",
+          GCPOOL_INFO(" warning for non fused blocks has non free phy_block: %lu, something wrong happended, block %p, block->ptr %p, block->size %fMB, free_blocks %lu, used_blocks %lu, event_id: %lu",
                                                i, block, block->ptr, block->size/(1024.f*1024.f), block->vmm_segment->free_blocks, block->vmm_segment->used_blocks, block->self_last_event->event_id);
         }
 
@@ -3452,7 +3439,7 @@ class DeviceCachingAllocator {
               delete other_block;
             }
           } else {
-            GMLAKE_INFO(" warning for non fused blocks has phy_block mapped to other non fused blocks");
+            GCPOOL_INFO(" warning for non fused blocks has phy_block mapped to other non fused blocks");
             exit(-1);
           }
         }
@@ -3733,7 +3720,7 @@ class NativeCachingAllocator : public CUDAAllocator {
         else return 1;
     })();
     if (vmmDefragment) {
-        GMLAKE_INFO(" GMLAKE initialized");
+        GCPOOL_INFO(" GCPOOL initialized");
     }
     if (size < device_count) {
       device_allocator.resize(device_count);
