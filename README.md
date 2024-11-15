@@ -31,6 +31,11 @@ done
 
 Run benchmark
 ```
+export vmmDefragment=1
+export autoGC=10000
+export fragLimit=268435456
+export reuseLimit=10
+export defragLevel=0
 bash training_scripts/single_node/benchmark.sh
 ```
 
