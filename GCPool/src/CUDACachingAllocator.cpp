@@ -922,6 +922,50 @@ void CachingAllocatorConfig::parseArgs(const char* env) {
   }
 }
 
+void compact_memory(Pool& pool) {
+    for (auto it = pool.blocks.begin(); it != pool.blocks.end(); ++it) {
+        Block* block = *it;
+        if (block->allocated) continue;
+
+        // Find next allocated block
+        auto next_it = std::next(it);
+        while (next_it != pool.blocks.end() && !(*next_it)->allocated) {
+            ++next_it;
+        }
+
+        if (next_it == pool.blocks.end()) break;
+
+        Block* next_block = *next_it;
+
+        // Move next_block to the start of the free region
+        size_t offset = (char*)next_block->ptr - (char*)block->ptr;
+        std::memmove(block->ptr, next_block->ptr, next_block->size);
+
+        // Update metadata for next_block
+        next_block->ptr = block->ptr;
+        block->size -= next_block->size;
+        block->ptr = (char*)block->ptr + next_block->size;
+
+        if (block->size == 0) {
+            pool.blocks.erase(it);
+            delete block;
+        }
+    }
+}
+
+float calculate_fragmentation(Pool& pool) {
+    size_t free_memory = 0;
+    size_t largest_free_block = 0;
+    for (const auto& block : pool.blocks) {
+        if (!block->allocated) {
+            free_memory += block->size;
+            largest_free_block = std::max(largest_free_block, block->size);
+        }
+    }
+    return 1.0f - static_cast<float>(largest_free_block) / free_memory;
+}
+
+
 namespace Native {
 
 class DeviceCachingAllocator {
@@ -1072,127 +1116,129 @@ class DeviceCachingAllocator {
     params.stat_types[static_cast<size_t>(get_stat_type_for_pool(pool))] = true;
 
     // First, try to get a block from the existing pool.
-    bool block_found =
-        // Search pool
-        get_free_block(params)
-        // Trigger callbacks and retry search
-        || (trigger_free_memory_callbacks(params) && get_free_block(params))
-        || get_fused_fragmented_blocks(params, 0);
-
-    // Can't reuse an existing block; try to get a new one.
-    if (!block_found) {
-      // Do garbage collection if the flag is set.
-      if (C10_UNLIKELY(
-              set_fraction &&
-              CachingAllocatorConfig::garbage_collection_threshold() > 0.0)) {
-        garbage_collect_cached_blocks();
-      }
-      // Attempt allocate
-      block_found = //alloc_block(params, false)
-             realloc_block(params, false)
-          // Free enough available cached blocks to satisfy alloc and retry
-          // alloc.
-          || (release_available_cached_blocks(params) &&
-              realloc_block(params, false))
-          || get_fused_fragmented_blocks(params, 1)
-          // Free all non-split cached blocks and retry alloc.
-          || (C10_LIKELY(captures_underway == 0) && release_cached_blocks() &&
-              realloc_block(params, true))
-          || get_fused_fragmented_blocks(params, 2);
-
-      if (record_history && block_found) {
-        record_trace(
-            TraceEntry::SEGMENT_ALLOC,
-            int64_t(params.block->ptr),
-            params.block->size,
-            params.stream(),
-            context);
-      }
-    }
+    block_found = 
+        get_free_block(params) ||
+        trigger_free_memory_callbacks(params) && get_free_block(params);
 
     if (!block_found) {
-      // For any error code other than cudaErrorMemoryAllocation,
-      // alloc_block should have thrown an exception already.
-      TORCH_INTERNAL_ASSERT(params.err == cudaErrorMemoryAllocation);
+        // Do garbage collection if the flag is set.
+        if (C10_UNLIKELY(
+                set_fraction &&
+                CachingAllocatorConfig::garbage_collection_threshold() > 0.0)) {
+            garbage_collect_cached_blocks();
+        }
 
-      size_t device_free;
-      size_t device_total;
-      C10_CUDA_CHECK(cudaMemGetInfo(&device_free, &device_total));
-      std::string allowed_info;
+        // Check and trigger memory compaction if fragmentation exceeds threshold.
+        if (calculate_fragmentation(pool) > COMPACTION_THRESHOLD) {
+            compact_memory(pool);
+            // Retry getting a block after compaction.
+            block_found = get_free_block(params);
+        }
 
-      if (set_fraction) {
-        allowed_info = format_size(allowed_memory_maximum) + " allowed; ";
-      }
+        // Attempt allocate
+        block_found =
+            realloc_block(params, false)
+            || (release_available_cached_blocks(params) &&
+                realloc_block(params, false))
+            || get_fused_fragmented_blocks(params, 1)
+            || (C10_LIKELY(captures_underway == 0) && release_cached_blocks() &&
+                realloc_block(params, true))
+            || get_fused_fragmented_blocks(params, 2);
 
-      if (record_history) {
-        record_trace(
-            TraceEntry::OOM,
-            device_free,
-            params.size(),
-            params.stream(),
-            std::move(context));
-      }
-      stats.num_ooms += 1;
-      GCPOOL_INFO(" current memory info: device_total: %luMB, device_free: %luMB, request size: %luMB",
-                                                                      device_total/(1024*1024), device_free/(1024*1024), size/(1024*1024));
-      print_snapshot();
-
-      c10::reportOutOfMemoryToProfiler(
-          size,
-          stats.allocated_bytes[static_cast<int64_t>(StatType::AGGREGATE)]
-              .current,
-          stats.reserved_bytes[static_cast<int64_t>(StatType::AGGREGATE)]
-              .current,
-          c10::Device(c10::DeviceType::CUDA, static_cast<DeviceIndex>(device)));
-      for (const auto& obs : oom_observers_) {
-        obs(device,
-            alloc_size,
-            set_fraction ? allowed_memory_maximum : device_total,
-            device_free);
-      }
-      // "total capacity": total global memory on GPU
-      // "allowed": memory is allowed to use, which set by fraction.
-      // "already allocated": memory allocated by the program using the
-      //                      caching allocator
-      // "free": free memory as reported by the CUDA API
-      // "cached": memory held by the allocator but not used by the program
-      //
-      // The "allocated" amount  does not include memory allocated outside
-      // of the caching allocator, such as memory allocated by other programs
-      // or memory held by the driver.
-      //
-      // The sum of "allocated" + "free" + "cached" may be less than the
-      // total capacity due to memory held by the driver and usage by other
-      // programs.
-      //
-      // Note that at this point free_cached_blocks has already returned all
-      // possible "cached" memory to the driver. The only remaining "cached"
-      // memory is split from a larger block that is partially in-use.
-      TORCH_CHECK_WITH(
-          OutOfMemoryError,
-          false,
-          "CUDA out of memory. Tried to allocate ",
-          format_size(alloc_size),
-          " (GPU ",
-          device,
-          "; ",
-          format_size(device_total),
-          " total capacity; ",
-          format_size(
-              stats.allocated_bytes[static_cast<size_t>(StatType::AGGREGATE)]
-                  .current),
-          " already allocated; ",
-          format_size(device_free),
-          " free; ",
-          allowed_info,
-          format_size(
-              stats.reserved_bytes[static_cast<size_t>(StatType::AGGREGATE)]
-                  .current),
-          " reserved in total by PyTorch)",
-          " If reserved memory is >> allocated memory try setting max_split_size_mb to avoid"
-          " fragmentation.  See documentation for Memory Management and PYTORCH_CUDA_ALLOC_CONF",
-          "");
+        if (record_history && block_found) {
+            record_trace(
+                TraceEntry::SEGMENT_ALLOC,
+                int64_t(params.block->ptr),
+                params.block->size,
+                params.stream(),
+                context);
+        }
     }
+
+
+    // if (!block_found) {
+    //   // For any error code other than cudaErrorMemoryAllocation,
+    //   // alloc_block should have thrown an exception already.
+    //   TORCH_INTERNAL_ASSERT(params.err == cudaErrorMemoryAllocation);
+
+    //   size_t device_free;
+    //   size_t device_total;
+    //   C10_CUDA_CHECK(cudaMemGetInfo(&device_free, &device_total));
+    //   std::string allowed_info;
+
+    //   if (set_fraction) {
+    //     allowed_info = format_size(allowed_memory_maximum) + " allowed; ";
+    //   }
+
+    //   if (record_history) {
+    //     record_trace(
+    //         TraceEntry::OOM,
+    //         device_free,
+    //         params.size(),
+    //         params.stream(),
+    //         std::move(context));
+    //   }
+    //   stats.num_ooms += 1;
+    //   GCPOOL_INFO(" current memory info: device_total: %luMB, device_free: %luMB, request size: %luMB",
+    //                                                                   device_total/(1024*1024), device_free/(1024*1024), size/(1024*1024));
+    //   print_snapshot();
+
+    //   c10::reportOutOfMemoryToProfiler(
+    //       size,
+    //       stats.allocated_bytes[static_cast<int64_t>(StatType::AGGREGATE)]
+    //           .current,
+    //       stats.reserved_bytes[static_cast<int64_t>(StatType::AGGREGATE)]
+    //           .current,
+    //       c10::Device(c10::DeviceType::CUDA, static_cast<DeviceIndex>(device)));
+    //   for (const auto& obs : oom_observers_) {
+    //     obs(device,
+    //         alloc_size,
+    //         set_fraction ? allowed_memory_maximum : device_total,
+    //         device_free);
+    //   }
+    //   // "total capacity": total global memory on GPU
+    //   // "allowed": memory is allowed to use, which set by fraction.
+    //   // "already allocated": memory allocated by the program using the
+    //   //                      caching allocator
+    //   // "free": free memory as reported by the CUDA API
+    //   // "cached": memory held by the allocator but not used by the program
+    //   //
+    //   // The "allocated" amount  does not include memory allocated outside
+    //   // of the caching allocator, such as memory allocated by other programs
+    //   // or memory held by the driver.
+    //   //
+    //   // The sum of "allocated" + "free" + "cached" may be less than the
+    //   // total capacity due to memory held by the driver and usage by other
+    //   // programs.
+    //   //
+    //   // Note that at this point free_cached_blocks has already returned all
+    //   // possible "cached" memory to the driver. The only remaining "cached"
+    //   // memory is split from a larger block that is partially in-use.
+    //   TORCH_CHECK_WITH(
+    //       OutOfMemoryError,
+    //       false,
+    //       "CUDA out of memory. Tried to allocate ",
+    //       format_size(alloc_size),
+    //       " (GPU ",
+    //       device,
+    //       "; ",
+    //       format_size(device_total),
+    //       " total capacity; ",
+    //       format_size(
+    //           stats.allocated_bytes[static_cast<size_t>(StatType::AGGREGATE)]
+    //               .current),
+    //       " already allocated; ",
+    //       format_size(device_free),
+    //       " free; ",
+    //       allowed_info,
+    //       format_size(
+    //           stats.reserved_bytes[static_cast<size_t>(StatType::AGGREGATE)]
+    //               .current),
+    //       " reserved in total by PyTorch)",
+    //       " If reserved memory is >> allocated memory try setting max_split_size_mb to avoid"
+    //       " fragmentation.  See documentation for Memory Management and PYTORCH_CUDA_ALLOC_CONF",
+    //       "");
+    // }
 
     TORCH_INTERNAL_ASSERT(
         params.err == cudaSuccess && params.block != nullptr &&
