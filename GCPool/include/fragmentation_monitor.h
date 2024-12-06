@@ -34,9 +34,36 @@ public:
     }
 
 private:
-    void triggerOptimization() {
-        // Implement stitching and compaction logic here
-        // For example, you can call segment->remerge() or segment->split() methods
+    void triggerOptimization(std::vector<std::shared_ptr<VmmSegment>>& segments) {
+        // Sort segments by their starting address to facilitate stitching
+        std::sort(segments.begin(), segments.end(), [](const std::shared_ptr<VmmSegment>& a, const std::shared_ptr<VmmSegment>& b) {
+            return a->segment_ptr < b->segment_ptr;
+        });
+    
+        // Attempt to stitch adjacent segments
+        for (size_t i = 0; i < segments.size() - 1; ++i) {
+            if (segments[i]->remerge(*segments[i + 1])) {
+                // Remove the merged segment
+                segments.erase(segments.begin() + i + 1);
+                --i; // Adjust index to recheck the current segment with the next one
+            }
+        }
+    
+        // Compaction logic: move free blocks to create larger contiguous free spaces
+        for (auto& segment : segments) {
+            if (segment->free_blocks > 0) {
+                size_t freeBlockSize = segment->free_blocks * segment->granul_size;
+                auto newSegment = segment->split(freeBlockSize);
+                if (newSegment) {
+                    segments.push_back(newSegment);
+                }
+            }
+        }
+    
+        // Sort segments again after compaction
+        std::sort(segments.begin(), segments.end(), [](const std::shared_ptr<VmmSegment>& a, const std::shared_ptr<VmmSegment>& b) {
+            return a->segment_ptr < b->segment_ptr;
+        });
     }
 
     size_t fragmentationThreshold;
